@@ -1,0 +1,24 @@
+{
+    "name": "bun",
+    "private": true,
+    "type": "module",
+    "module": "src/index.ts",
+    "scripts": {
+        "dev": "bun run --watch src/index.ts",
+        "start": "bun run src/index.ts"
+    },
+    "dependencies": {
+        "avsc": "5.7.9",
+        "msgpackr": "2.1.0",
+        "papaparse": "5.7.0",
+        "protobufjs": "8.8.0"
+    },
+    "devDependencies": {
+        "@types/bun": "^1.4.2",
+        "@types/papaparse": "^5.5.2",
+        "oxfmt": "^0.70.0",
+        "oxlint": "^1.85.0",
+        "oxlint-tsgolint": "^7.0.2002",
+        "typescript": "^7.0.2"
+    }
+}
