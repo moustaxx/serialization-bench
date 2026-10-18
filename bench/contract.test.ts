@@ -6,7 +6,6 @@ import { buildArtifactPath } from "./artifacts.ts";
 import {
     buildBenchmarkEndpoint,
     calculateBytesPerSecond,
-    getScenarioPhases,
     preflightBenchEndpoint,
     resolveServerDirectory,
     validateBenchResponse,
@@ -40,18 +39,11 @@ test("builds the serialization and deserialization endpoints", () => {
     );
 });
 
-test("builds the S12 baseline endpoint", () => {
+test("builds the baseline endpoint", () => {
     assert.equal(
-        buildBenchmarkEndpoint("http://127.0.0.1:3000", "json", "s12", "serialize"),
+        buildBenchmarkEndpoint("http://127.0.0.1:3000", "json", "baseline", "serialize"),
         "http://127.0.0.1:3000/baseline",
     );
-});
-
-test("defines cold and warm phases for S9", () => {
-    assert.deepEqual(getScenarioPhases("cold-warm"), [
-        { name: "cold", iterations: 10 },
-        { name: "warm", iterations: 1000 },
-    ]);
 });
 
 test("resolves the current server directories", () => {
@@ -95,7 +87,16 @@ test("calculates response bytes per second from a measured request", () => {
 test("preflight validates a real endpoint before load testing", async () => {
     const server = createServer((_request, response) => {
         response.writeHead(200, { "Content-Type": "application/json" });
-        response.end('{"ok":true}');
+        response.end(
+            JSON.stringify({
+                id: 1,
+                name: "Test Object",
+                value: 123.45,
+                active: true,
+                description: "To jest mały payload testowy",
+                timestamp: 1714065600,
+            }),
+        );
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve as () => void));
     const { port } = server.address() as AddressInfo;
@@ -107,7 +108,27 @@ test("preflight validates a real endpoint before load testing", async () => {
     );
 });
 
-test("preflight validates the S12 baseline endpoint", async () => {
+test("preflight rejects a payload that differs from the canonical fixture", async () => {
+    const server = createServer((_request, response) => {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(
+            '{"id":999,"name":"wrong","value":0,"active":false,"description":"wrong","timestamp":0}',
+        );
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve as () => void));
+    const { port } = server.address() as AddressInfo;
+
+    await assert.rejects(
+        preflightBenchEndpoint(`http://127.0.0.1:${port}`, "json", "s1"),
+        /canonical fixture/,
+    );
+
+    await new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve(undefined))),
+    );
+});
+
+test("preflight validates the baseline endpoint", async () => {
     const server = createServer((_request, response) => {
         response.writeHead(200, { "Content-Type": "text/plain" });
         response.end("baseline");
@@ -115,7 +136,9 @@ test("preflight validates the S12 baseline endpoint", async () => {
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve as () => void));
     const { port } = server.address() as AddressInfo;
 
-    await assert.doesNotReject(preflightBenchEndpoint(`http://127.0.0.1:${port}`, "json", "s12"));
+    await assert.doesNotReject(
+        preflightBenchEndpoint(`http://127.0.0.1:${port}`, "json", "baseline"),
+    );
 
     await new Promise((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve(null))),
@@ -129,6 +152,11 @@ test("preflight validates a deserialization endpoint with a prepared payload", a
             response.end('{"ok":true}');
             return;
         }
+        if (request.headers["content-length"] === "0") {
+            response.writeHead(400, { "Content-Type": "text/plain" });
+            response.end("Bad Request");
+            return;
+        }
         response.writeHead(200, { "Content-Type": "text/plain" });
         response.end("OK");
     });
@@ -137,6 +165,29 @@ test("preflight validates a deserialization endpoint with a prepared payload", a
 
     await assert.doesNotReject(
         preflightBenchEndpoint(`http://127.0.0.1:${port}`, "json", "s1", "deserialize"),
+    );
+
+    await new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve(undefined))),
+    );
+});
+
+test("preflight rejects a deserialization endpoint that accepts an empty payload", async () => {
+    const server = createServer((request, response) => {
+        if (request.method === "GET") {
+            response.writeHead(200, { "Content-Type": "application/json" });
+            response.end('{"ok":true}');
+            return;
+        }
+        response.writeHead(200, { "Content-Type": "text/plain" });
+        response.end("OK");
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve as () => void));
+    const { port } = server.address() as AddressInfo;
+
+    await assert.rejects(
+        preflightBenchEndpoint(`http://127.0.0.1:${port}`, "json", "s1", "deserialize"),
+        /empty payload/,
     );
 
     await new Promise((resolve, reject) =>

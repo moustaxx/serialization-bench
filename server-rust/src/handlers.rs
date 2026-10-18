@@ -1,6 +1,6 @@
 use crate::models::*;
 use crate::serialization::{
-    BenchResponse, SerializationFormat, avro_array_schema, avro_collection_schema,
+    BenchResponse, SerializationFormat, avro_collection_schema, avro_nested_schema,
     avro_small_schema, encode_avro,
 };
 use axum::{
@@ -9,7 +9,6 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use prost::Message;
-use serde::Serialize;
 use std::collections::HashMap;
 
 pub async fn handle_baseline() -> Response {
@@ -25,57 +24,34 @@ pub async fn handle_bench(Path((format, scenario)): Path<(String, String)>) -> R
         "msgpack" => SerializationFormat::MsgPack,
         "protobuf" => SerializationFormat::Protobuf,
         "avro" => SerializationFormat::Avro,
-        "csv" => SerializationFormat::Csv,
         _ => return StatusCode::BAD_REQUEST.into_response(),
     };
 
     match scenario.as_str() {
         "s1" => {
-            let data = prepared_payloads().s1.clone();
+            let data = &prepared_payloads().s1;
             if matches!(format, SerializationFormat::Avro) {
                 return handle_avro_s1(data).into_response();
             }
-            if matches!(format, SerializationFormat::Csv) {
-                return handle_csv_s1(data).into_response();
-            }
             BenchResponse { data, format }.into_response()
         }
-        "s2" => {
-            let data = prepared_payloads().s2.clone();
+        "s2" | "s2_100" | "s2_1000" | "s2_10000" => {
+            let data = match scenario.as_str() {
+                "s2" => &prepared_payloads().s2,
+                "s2_100" => &prepared_payloads().s2_100,
+                "s2_1000" => &prepared_payloads().s2_1000,
+                "s2_10000" => &prepared_payloads().s2_10000,
+                _ => unreachable!(),
+            };
             if matches!(format, SerializationFormat::Avro) {
                 return handle_avro_collection(data).into_response();
-            }
-            if matches!(format, SerializationFormat::Csv) {
-                return handle_csv_collection(data).into_response();
             }
             BenchResponse { data, format }.into_response()
         }
         "s3" => {
-            let data = prepared_payloads().s3.clone();
+            let data = &prepared_payloads().s3;
             if matches!(format, SerializationFormat::Avro) {
-                return handle_avro_collection(data).into_response();
-            }
-            if matches!(format, SerializationFormat::Csv) {
-                return handle_csv_collection(data).into_response();
-            }
-            BenchResponse { data, format }.into_response()
-        }
-        "s4" => {
-            let data = prepared_payloads().s4.clone();
-            if matches!(format, SerializationFormat::Avro)
-                || matches!(format, SerializationFormat::Csv)
-            {
-                return StatusCode::NOT_IMPLEMENTED.into_response();
-            }
-            BenchResponse { data, format }.into_response()
-        }
-        "s5" => {
-            let data = prepared_payloads().s5.clone();
-            if matches!(format, SerializationFormat::Avro) {
-                return handle_avro_array(data).into_response();
-            }
-            if matches!(format, SerializationFormat::Csv) {
-                return handle_csv_array(data).into_response();
+                return handle_avro_nested(data).into_response();
             }
             BenchResponse { data, format }.into_response()
         }
@@ -85,87 +61,22 @@ pub async fn handle_bench(Path((format, scenario)): Path<(String, String)>) -> R
 
 // Special handlers for Avro and CSV
 
-fn handle_avro_s1(data: SmallPayload) -> impl IntoResponse {
+fn handle_avro_s1(data: &SmallPayload) -> impl IntoResponse {
     let body = encode_avro(avro_small_schema(), data).unwrap();
     ([(header::CONTENT_TYPE, "application/avro")], body)
 }
 
-fn handle_csv_s1(data: SmallPayload) -> impl IntoResponse {
-    let mut wtr = csv::Writer::from_writer(Vec::new());
-    #[derive(Serialize)]
-    struct FlatSmallPayload {
-        id: i32,
-        name: String,
-        value: f32,
-        active: bool,
-        description: String,
-        timestamp: i64,
-    }
-    wtr.serialize(FlatSmallPayload {
-        id: data.id,
-        name: data.name,
-        value: data.value,
-        active: data.active,
-        description: data.description,
-        timestamp: data.timestamp,
-    })
-    .unwrap();
-    let body = wtr.into_inner().unwrap();
-    ([(header::CONTENT_TYPE, "text/csv")], body)
-}
-
-fn handle_avro_collection(data: CollectionPayload) -> impl IntoResponse {
+fn handle_avro_collection(data: &CollectionPayload) -> impl IntoResponse {
     let body = encode_avro(avro_collection_schema(), data).unwrap();
     ([(header::CONTENT_TYPE, "application/avro")], body)
 }
 
-fn handle_csv_collection(data: CollectionPayload) -> impl IntoResponse {
-    let mut wtr = csv::Writer::from_writer(Vec::new());
-    for item in data.items {
-        #[derive(Serialize)]
-        struct FlatItem {
-            id: i32,
-            code: String,
-            price: f64,
-            quantity: i32,
-            category: String,
-            manufacturer: String,
-            weight: String,
-        }
-        let details = item.details.unwrap_or(ItemDetails {
-            manufacturer: String::new(),
-            weight: String::new(),
-        });
-        wtr.serialize(FlatItem {
-            id: item.id,
-            code: item.code,
-            price: item.price,
-            quantity: item.quantity,
-            category: item.category,
-            manufacturer: details.manufacturer,
-            weight: details.weight,
-        })
-        .unwrap();
-    }
-    let body = wtr.into_inner().unwrap();
-    ([(header::CONTENT_TYPE, "text/csv")], body)
-}
-
-fn handle_avro_array(data: ArrayPayload) -> impl IntoResponse {
-    let body = encode_avro(avro_array_schema(), data).unwrap();
+fn handle_avro_nested(data: &NestedLevel1) -> impl IntoResponse {
+    let body = encode_avro(avro_nested_schema(), data).unwrap();
     ([(header::CONTENT_TYPE, "application/avro")], body)
 }
 
-fn handle_csv_array(data: ArrayPayload) -> impl IntoResponse {
-    let mut wtr = csv::Writer::from_writer(Vec::new());
-    for val in data.data {
-        wtr.serialize((val,)).unwrap();
-    }
-    let body = wtr.into_inner().unwrap();
-    ([(header::CONTENT_TYPE, "text/csv")], body)
-}
-
-// S8: Deserialization test
+// Deserialization test
 pub async fn handle_deserialization_test(
     Path((format, scenario)): Path<(String, String)>,
     axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
@@ -187,7 +98,7 @@ pub async fn handle_deserialization_test(
                     return StatusCode::BAD_REQUEST.into_response();
                 }
             }
-            "s2" | "s3" => {
+            "s2" | "s2_100" | "s2_1000" | "s2_10000" => {
                 let value: CollectionPayload = match serde_json::from_slice(&body) {
                     Ok(value) => value,
                     Err(_) => return StatusCode::BAD_REQUEST.into_response(),
@@ -196,16 +107,7 @@ pub async fn handle_deserialization_test(
                     return StatusCode::BAD_REQUEST.into_response();
                 }
             }
-            "s5" => {
-                let value: ArrayPayload = match serde_json::from_slice(&body) {
-                    Ok(value) => value,
-                    Err(_) => return StatusCode::BAD_REQUEST.into_response(),
-                };
-                if validate && value.data.is_empty() {
-                    return StatusCode::BAD_REQUEST.into_response();
-                }
-            }
-            "s4" => {
+            "s3" => {
                 let value: NestedLevel1 = match serde_json::from_slice(&body) {
                     Ok(value) => value,
                     Err(_) => return StatusCode::BAD_REQUEST.into_response(),
@@ -226,7 +128,7 @@ pub async fn handle_deserialization_test(
                     return StatusCode::BAD_REQUEST.into_response();
                 }
             }
-            "s2" | "s3" => {
+            "s2" | "s2_100" | "s2_1000" | "s2_10000" => {
                 let value: CollectionPayload = match rmp_serde::from_slice(&body) {
                     Ok(value) => value,
                     Err(_) => return StatusCode::BAD_REQUEST.into_response(),
@@ -235,16 +137,7 @@ pub async fn handle_deserialization_test(
                     return StatusCode::BAD_REQUEST.into_response();
                 }
             }
-            "s5" => {
-                let value: ArrayPayload = match rmp_serde::from_slice(&body) {
-                    Ok(value) => value,
-                    Err(_) => return StatusCode::BAD_REQUEST.into_response(),
-                };
-                if validate && value.data.is_empty() {
-                    return StatusCode::BAD_REQUEST.into_response();
-                }
-            }
-            "s4" => {
+            "s3" => {
                 let value: NestedLevel1 = match rmp_serde::from_slice(&body) {
                     Ok(value) => value,
                     Err(_) => return StatusCode::BAD_REQUEST.into_response(),
@@ -265,7 +158,7 @@ pub async fn handle_deserialization_test(
                     return StatusCode::BAD_REQUEST.into_response();
                 }
             }
-            "s2" | "s3" => {
+            "s2" | "s2_100" | "s2_1000" | "s2_10000" => {
                 let value = match CollectionPayload::decode(body.as_ref()) {
                     Ok(value) => value,
                     Err(_) => return StatusCode::BAD_REQUEST.into_response(),
@@ -274,16 +167,7 @@ pub async fn handle_deserialization_test(
                     return StatusCode::BAD_REQUEST.into_response();
                 }
             }
-            "s5" => {
-                let value = match ArrayPayload::decode(body.as_ref()) {
-                    Ok(value) => value,
-                    Err(_) => return StatusCode::BAD_REQUEST.into_response(),
-                };
-                if validate && value.data.is_empty() {
-                    return StatusCode::BAD_REQUEST.into_response();
-                }
-            }
-            "s4" => {
+            "s3" => {
                 let value = match NestedLevel1::decode(body.as_ref()) {
                     Ok(value) => value,
                     Err(_) => return StatusCode::BAD_REQUEST.into_response(),
@@ -295,30 +179,18 @@ pub async fn handle_deserialization_test(
             _ => return StatusCode::NOT_FOUND.into_response(),
         },
         "avro" => {
-            if !matches!(scenario.as_str(), "s1" | "s2" | "s3" | "s5") {
-                return StatusCode::NOT_IMPLEMENTED.into_response();
-            }
             let schema = match scenario.as_str() {
                 "s1" => avro_small_schema(),
-                "s2" | "s3" => avro_collection_schema(),
-                "s5" => avro_array_schema(),
-                _ => unreachable!(),
+                "s2" | "s2_100" | "s2_1000" | "s2_10000" => avro_collection_schema(),
+                "s3" => avro_nested_schema(),
+                _ => return StatusCode::NOT_FOUND.into_response(),
             };
             let mut input = body.as_ref();
-            if apache_avro::from_avro_datum(schema, &mut input, None).is_err() {
-                return StatusCode::BAD_REQUEST.into_response();
-            }
-        }
-        "csv" => {
-            if !matches!(scenario.as_str(), "s1" | "s2" | "s3" | "s5") {
-                return StatusCode::NOT_IMPLEMENTED.into_response();
-            }
-            let mut rdr = csv::Reader::from_reader(body.as_ref());
-            let rows: Vec<_> = match rdr.records().collect::<Result<Vec<_>, _>>() {
-                Ok(rows) => rows,
+            let value = match apache_avro::from_avro_datum(schema, &mut input, None) {
+                Ok(value) => value,
                 Err(_) => return StatusCode::BAD_REQUEST.into_response(),
             };
-            if validate && rows.is_empty() {
+            if validate && !validate_avro_application_data(&value, &scenario) {
                 return StatusCode::BAD_REQUEST.into_response();
             }
         }
@@ -327,9 +199,29 @@ pub async fn handle_deserialization_test(
     StatusCode::OK.into_response()
 }
 
+fn validate_avro_application_data(value: &apache_avro::types::Value, scenario: &str) -> bool {
+    use apache_avro::types::Value;
+
+    let Value::Record(fields) = value else {
+        return false;
+    };
+    match scenario {
+        "s1" => fields.iter().any(|(name, value)| {
+            name == "name" && matches!(value, Value::String(value) if !value.is_empty())
+        }),
+        "s2" | "s2_100" | "s2_1000" | "s2_10000" => fields.iter().any(|(name, value)| {
+            name == "items" && matches!(value, Value::Array(items) if !items.is_empty())
+        }),
+        "s3" => fields.iter().any(|(name, value)| {
+            name == "next" && matches!(value, Value::Union(index, _) if *index != 0)
+        }),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::handle_deserialization_test;
+    use super::{handle_bench, handle_deserialization_test};
     use axum::{
         body::Bytes,
         extract::{Path, Query},
@@ -347,5 +239,62 @@ mod tests {
         .await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn avro_s3_is_supported() {
+        crate::models::prepare_payloads();
+        let response = handle_bench(Path(("avro".to_string(), "s3".to_string()))).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn avro_s3_payload_is_deserializable() {
+        crate::models::prepare_payloads();
+        let response = handle_bench(Path(("avro".to_string(), "s3".to_string()))).await;
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let response = handle_deserialization_test(
+            Path(("avro".to_string(), "s3".to_string())),
+            Query(HashMap::new()),
+            body,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn avro_validation_is_shared_by_with_and_without_variants() {
+        let payload = crate::serialization::encode_avro(
+            crate::serialization::avro_small_schema(),
+            crate::models::SmallPayload {
+                name: String::new(),
+                ..crate::models::gen_s1()
+            },
+        )
+        .unwrap();
+
+        let mut with = HashMap::new();
+        with.insert("validation".to_string(), "with".to_string());
+        let with_response = handle_deserialization_test(
+            Path(("avro".to_string(), "s1".to_string())),
+            Query(with),
+            Bytes::from(payload.clone()),
+        )
+        .await;
+        assert_eq!(with_response.status(), StatusCode::BAD_REQUEST);
+
+        let mut without = HashMap::new();
+        without.insert("validation".to_string(), "without".to_string());
+        let without_response = handle_deserialization_test(
+            Path(("avro".to_string(), "s1".to_string())),
+            Query(without),
+            Bytes::from(payload),
+        )
+        .await;
+        assert_eq!(without_response.status(), StatusCode::OK);
     }
 }

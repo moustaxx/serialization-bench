@@ -7,8 +7,7 @@ export interface SmallPayload {
     description: string;
     timestamp: number;
 }
-
-// S2 & S3: Średni i Duży payload
+// S2: Kolekcja obiektów
 export interface ItemDetails {
     manufacturer: string;
     weight: string;
@@ -27,7 +26,7 @@ export interface CollectionPayload {
     items: Item[];
 }
 
-// S4: Głębokie zagnieżdżenie (5 poziomów)
+// S3: Głębokie zagnieżdżenie (5 poziomów)
 export interface NestedLevel5 {
     leaf: string;
 }
@@ -48,11 +47,6 @@ export interface NestedLevel1 {
     next?: NestedLevel2;
 }
 
-// S5: Dane jednorodne (tablice)
-export interface ArrayPayload {
-    data: number[];
-}
-
 // Funkcje pomocnicze do generowania danych
 export function genS1(): SmallPayload {
     return {
@@ -65,27 +59,9 @@ export function genS1(): SmallPayload {
     };
 }
 
-export function genS2(): CollectionPayload {
+export function genS2(count = 10000): CollectionPayload {
     const items: Item[] = [];
-    for (let i = 0; i < 100; i++) {
-        items.push({
-            id: i,
-            code: `CODE-${i.toString().padStart(4, "0")}`,
-            price: i * 1.5,
-            quantity: i * 2,
-            category: "Electronics",
-            details: {
-                manufacturer: "RustCorp",
-                weight: "1.2kg",
-            },
-        });
-    }
-    return { items };
-}
-
-export function genS3(): CollectionPayload {
-    const items: Item[] = [];
-    for (let i = 0; i < 10000; i++) {
+    for (let i = 0; i < count; i++) {
         items.push({
             id: i,
             code: `CODE-${i.toString().padStart(4, "0")}`,
@@ -101,7 +77,7 @@ export function genS3(): CollectionPayload {
     return { items };
 }
 
-export function genS4(): NestedLevel1 {
+export function genS3(): NestedLevel1 {
     return {
         next: {
             next: {
@@ -113,12 +89,4 @@ export function genS4(): NestedLevel1 {
             },
         },
     };
-}
-
-export function genS5(): ArrayPayload {
-    const data: number[] = [];
-    for (let i = 0; i < 100000; i++) {
-        data.push(i);
-    }
-    return { data };
 }

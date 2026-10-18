@@ -5,15 +5,18 @@ import { Counter, Trend } from "k6/metrics";
 const baseUrl = __ENV.BENCH_URL || "http://127.0.0.1:3000";
 const format = __ENV.BENCH_FORMAT || "json";
 const scenario = __ENV.BENCH_SCENARIO || "s1";
-const profile = __ENV.BENCH_PROFILE || "steady";
 const operation = __ENV.BENCH_OPERATION || "serialize";
 const validation = __ENV.BENCH_VALIDATION || "with";
 const warmupSeconds = Number(__ENV.BENCH_WARMUP_SECONDS || 10);
 const durationSeconds = Number(__ENV.BENCH_DURATION_SECONDS || 30);
 const warmupVUs = Number(__ENV.BENCH_WARMUP_VUS || 1);
 const measurementVUs = Number(__ENV.BENCH_VUS || 4);
-const outputPath = __ENV.K6_SUMMARY || `bench/artifacts/k6-${profile}-${Date.now()}.json`;
-const isBaselineScenario = scenario === "s12";
+const loadProfile = __ENV.BENCH_LOAD_PROFILE || "constant-vus";
+const arrivalRate = Number(__ENV.BENCH_ARRIVAL_RATE || 20);
+const maxVUs = Number(__ENV.BENCH_MAX_VUS || Math.max(measurementVUs, arrivalRate));
+const sleepSeconds = Number(__ENV.BENCH_SLEEP_SECONDS || 0.1);
+const outputPath = __ENV.K6_SUMMARY || `bench/artifacts/k6-${Date.now()}.json`;
+const isBaselineScenario = scenario === "baseline";
 const route = isBaselineScenario
     ? "baseline"
     : operation === "deserialize"
@@ -31,7 +34,6 @@ const expectedContentTypes = {
     msgpack: "application/msgpack",
     protobuf: "application/x-protobuf",
     avro: "application/avro",
-    csv: "text/csv",
 };
 const expectedResponseContentType =
     operation === "deserialize"
@@ -39,10 +41,9 @@ const expectedResponseContentType =
         : isBaselineScenario
           ? "text/plain"
           : expectedContentTypes[format];
+const sharedFixture =
+    operation === "deserialize" && !isBaselineScenario ? open(__ENV.BENCH_FIXTURE_PATH, "b") : null;
 
-if (!["steady", "step", "cold-warm"].includes(profile)) {
-    throw new Error(`Unsupported BENCH_PROFILE=${profile}`);
-}
 if (!expectedContentTypes[format]) {
     throw new Error(`Unsupported BENCH_FORMAT=${format}`);
 }
@@ -50,7 +51,7 @@ if (!["serialize", "deserialize"].includes(operation)) {
     throw new Error(`Unsupported BENCH_OPERATION=${operation}`);
 }
 if (isBaselineScenario && operation !== "serialize") {
-    throw new Error("S12 baseline does not support deserialization");
+    throw new Error("Baseline does not support deserialization");
 }
 if (!["with", "without"].includes(validation)) {
     throw new Error(`Unsupported BENCH_VALIDATION=${validation}`);
@@ -67,53 +68,42 @@ if (!Number.isInteger(warmupVUs) || warmupVUs < 1) {
 if (!Number.isInteger(measurementVUs) || measurementVUs < 1) {
     throw new Error("BENCH_VUS must be a positive integer");
 }
+if (!["constant-vus", "constant-arrival-rate"].includes(loadProfile)) {
+    throw new Error(`Unsupported BENCH_LOAD_PROFILE=${loadProfile}`);
+}
+if (!Number.isFinite(arrivalRate) || arrivalRate <= 0) {
+    throw new Error("BENCH_ARRIVAL_RATE must be positive");
+}
+if (!Number.isInteger(maxVUs) || maxVUs < 1) {
+    throw new Error("BENCH_MAX_VUS must be a positive integer");
+}
+if (!Number.isFinite(sleepSeconds) || sleepSeconds < 0) {
+    throw new Error("BENCH_SLEEP_SECONDS must be non-negative");
+}
 
-const stages = [
-    { duration: "15s", target: 2 },
-    { duration: "15s", target: 4 },
-    { duration: "15s", target: 8 },
-    { duration: "15s", target: 0 },
-];
-const measurementDurationSeconds =
-    profile === "step"
-        ? stages.reduce((total, stage) => total + Number.parseInt(stage.duration, 10), 0)
-        : profile === "cold-warm"
-          ? 101
-          : durationSeconds;
-
-const measurementOptions =
-    profile === "step"
+const measurementDurationSeconds = durationSeconds;
+const measurementScenario =
+    loadProfile === "constant-arrival-rate"
         ? {
-              executor: "ramping-vus",
-              startVUs: 1,
-              stages,
-              gracefulRampDown: "5s",
+              executor: "constant-arrival-rate",
+              rate: arrivalRate,
+              timeUnit: "1s",
+              duration: `${durationSeconds}s`,
+              preAllocatedVUs: measurementVUs,
+              maxVUs,
+              startTime: `${warmupSeconds}s`,
+              exec: "measurement",
           }
         : {
               executor: "constant-vus",
               vus: measurementVUs,
               duration: `${durationSeconds}s`,
+              startTime: `${warmupSeconds}s`,
+              exec: "measurement",
           };
-
-const scenarios =
-    profile === "cold-warm"
-        ? {
-              coldWarm: {
-                  executor: "shared-iterations",
-                  vus: 1,
-                  iterations: 1010,
-                  maxDuration: `${Math.max(120, warmupSeconds + durationSeconds)}s`,
-                  startTime: `${warmupSeconds}s`,
-                  exec: "coldWarm",
-              },
-          }
-        : {
-              measurement: {
-                  ...measurementOptions,
-                  startTime: `${warmupSeconds}s`,
-                  exec: "measurement",
-              },
-          };
+const scenarios = {
+    measurement: measurementScenario,
+};
 
 if (warmupSeconds > 0) {
     scenarios.warmup = {
@@ -134,11 +124,19 @@ export const options = {
         runtime: __ENV.BENCH_RUNTIME || "bun",
         format,
         scenario,
-        profile,
     },
 };
 
+function responseBodyBytes(response) {
+    const contentLength = Number(response.headers["Content-Length"]);
+    return Number.isFinite(contentLength) && contentLength >= 0
+        ? contentLength
+        : (response.body?.length ?? 0);
+}
+
 function request(phase, payload) {
+    const requestBody = payload?.body ?? payload;
+    const preparedRequestBytes = payload?.bytes;
     const params = {
         tags: { phase, operation, validation },
         headers:
@@ -148,46 +146,39 @@ function request(phase, payload) {
     };
     const response =
         operation === "deserialize"
-            ? http.post(endpoint, payload, params)
+            ? http.post(endpoint, requestBody, params)
             : http.get(endpoint, params);
     if (operation === "deserialize") {
-        requestBytes.add(payload?.length ?? 0, { phase, format, scenario });
-        requestBytesTotal.add(payload?.length ?? 0, { phase, format, scenario });
+        const bytes = preparedRequestBytes ?? requestBody?.length ?? 0;
+        requestBytes.add(bytes, { phase, format, scenario });
+        requestBytesTotal.add(bytes, { phase, format, scenario });
     }
-    responseBytes.add(response.body?.length ?? 0, { phase, format, scenario });
-    responseBytesTotal.add(response.body?.length ?? 0, { phase, format, scenario });
+    const bytes = responseBodyBytes(response);
+    responseBytes.add(bytes, { phase, format, scenario });
+    responseBytesTotal.add(bytes, { phase, format, scenario });
     check(response, {
         "status is 200": (res) => res.status === 200,
         "content type matches operation": (res) =>
             res.headers["Content-Type"]?.startsWith(expectedResponseContentType),
-        "payload is not empty": (res) => (res.body?.length ?? 0) > 0,
+        "payload is not empty": (res) => responseBodyBytes(res) > 0,
     });
 }
 
 export function setup() {
     if (operation === "deserialize") {
-        const response = http.get(`${baseUrl}/bench/${format}/${scenario}`);
-        if (response.status !== 200)
-            throw new Error(`Payload preparation failed: ${response.status}`);
-        return response.body;
+        return { body: sharedFixture, bytes: sharedFixture.byteLength };
     }
     return null;
 }
 
 export function warmup(payload) {
     request("warmup", payload);
-    sleep(0.1);
+    if (loadProfile === "constant-vus" && sleepSeconds > 0) sleep(sleepSeconds);
 }
 
 export function measurement(payload) {
     request("measurement", payload);
-    sleep(0.1);
-}
-
-export function coldWarm(payload) {
-    const phase = __ITER < 10 ? "cold" : "warm";
-    request(phase, payload);
-    sleep(0.1);
+    if (loadProfile === "constant-vus" && sleepSeconds > 0) sleep(sleepSeconds);
 }
 
 export function handleSummary(data) {
@@ -201,12 +192,14 @@ export function handleSummary(data) {
             scenario,
             operation,
             validation,
-            profile,
             warmupSeconds,
             measurementDurationSeconds,
             warmupVUs,
-            measurementVUs: profile === "steady" ? measurementVUs : null,
-            stages: profile === "step" ? stages : null,
+            measurementVUs,
+            loadProfile,
+            arrivalRate: loadProfile === "constant-arrival-rate" ? arrivalRate : null,
+            maxVUs: loadProfile === "constant-arrival-rate" ? maxVUs : null,
+            sleepSeconds: loadProfile === "constant-vus" ? sleepSeconds : 0,
             contract: "GET /bench/{format}/{scenario}, POST /deserialize/{format}/{scenario}",
             bytesPerSecond: {
                 response: data.metrics.response_bytes_total?.rate ?? null,

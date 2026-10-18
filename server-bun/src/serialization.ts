@@ -1,9 +1,6 @@
 import avro from "avsc";
 import { Packr } from "msgpackr";
-import Papa from "papaparse";
 import protobuf from "protobufjs";
-
-import type { CollectionPayload, ArrayPayload } from "./models";
 
 // MessagePack
 const packr = new Packr();
@@ -47,11 +44,6 @@ const root = protobuf.Root.fromJSON({
         NestedLevel3: { fields: { next: { type: "NestedLevel4", id: 1 } } },
         NestedLevel2: { fields: { next: { type: "NestedLevel3", id: 1 } } },
         NestedLevel1: { fields: { next: { type: "NestedLevel2", id: 1 } } },
-        ArrayPayload: {
-            fields: {
-                data: { rule: "repeated", type: "int32", id: 1 },
-            },
-        },
     },
 });
 
@@ -108,37 +100,68 @@ const avroCollection = avro.Type.forSchema({
     ],
 });
 
-const avroArray = avro.Type.forSchema({
+const avroNested = avro.Type.forSchema({
     type: "record",
-    name: "ArrayPayload",
-    fields: [{ name: "data", type: { type: "array", items: "int" } }],
+    name: "NestedLevel1",
+    fields: [
+        {
+            name: "next",
+            type: [
+                "null",
+                {
+                    type: "record",
+                    name: "NestedLevel2",
+                    fields: [
+                        {
+                            name: "next",
+                            type: [
+                                "null",
+                                {
+                                    type: "record",
+                                    name: "NestedLevel3",
+                                    fields: [
+                                        {
+                                            name: "next",
+                                            type: [
+                                                "null",
+                                                {
+                                                    type: "record",
+                                                    name: "NestedLevel4",
+                                                    fields: [
+                                                        {
+                                                            name: "next",
+                                                            type: [
+                                                                "null",
+                                                                {
+                                                                    type: "record",
+                                                                    name: "NestedLevel5",
+                                                                    fields: [
+                                                                        {
+                                                                            name: "leaf",
+                                                                            type: "string",
+                                                                        },
+                                                                    ],
+                                                                },
+                                                            ],
+                                                            default: null,
+                                                        },
+                                                    ],
+                                                },
+                                            ],
+                                            default: null,
+                                        },
+                                    ],
+                                },
+                            ],
+                            default: null,
+                        },
+                    ],
+                },
+            ],
+            default: null,
+        },
+    ],
 });
-
-const csvFlattenItem = (item: any) => ({
-    id: item.id,
-    code: item.code,
-    price: item.price,
-    quantity: item.quantity,
-    category: item.category,
-    manufacturer: item.details?.manufacturer ?? "",
-    weight: item.details?.weight ?? "",
-});
-
-export function validateCsvRows(value: unknown, scenario: string): boolean {
-    if (!Array.isArray(value) || value.length === 0) return false;
-    const firstRow = value[0];
-    if (!firstRow || typeof firstRow !== "object") return false;
-    const columns = new Set(Object.keys(firstRow));
-    const requiredColumns =
-        scenario === "s1"
-            ? ["id", "name", "value", "active", "description", "timestamp"]
-            : scenario === "s2" || scenario === "s3"
-              ? ["id", "code", "price", "quantity", "category", "manufacturer", "weight"]
-              : scenario === "s5"
-                ? ["0"]
-                : [];
-    return requiredColumns.length > 0 && requiredColumns.every((column) => columns.has(column));
-}
 
 export const serializers = {
     json: (data: any) => {
@@ -155,20 +178,6 @@ export const serializers = {
     avro: (data: any, schema: avro.Type) => {
         return schema.toBuffer(data);
     },
-    csv: (data: any, scenario: string) => {
-        if (scenario === "s1") {
-            return Buffer.from(Papa.unparse([data]));
-        }
-        if (scenario === "s2" || scenario === "s3") {
-            const flatItems = (data as CollectionPayload).items.map(csvFlattenItem);
-            return Buffer.from(Papa.unparse(flatItems));
-        }
-        if (scenario === "s5") {
-            const flatData = (data as ArrayPayload).data.map((v) => [v]);
-            return Buffer.from(Papa.unparse(flatData));
-        }
-        throw new Error("CSV not implemented for this scenario");
-    },
 };
 
 export const deserializers = {
@@ -180,14 +189,11 @@ export const deserializers = {
     },
     protobuf: (buf: Buffer, type: string) => {
         const pbType = root.lookupType(type);
-        return pbType.decode(buf);
+        return pbType.toObject(pbType.decode(buf), { defaults: true, longs: Number });
     },
     avro: (buf: Buffer, schema: any) => {
         return schema.fromBuffer(buf);
     },
-    csv: (buf: Buffer) => {
-        return Papa.parse(buf.toString(), { header: true, skipEmptyLines: true }).data;
-    },
 };
 
-export { avroSmall, avroCollection, avroArray };
+export { avroSmall, avroCollection, avroNested };

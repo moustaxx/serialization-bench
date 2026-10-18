@@ -27,34 +27,30 @@ The project lives in `server-bun/`. Its serialization dependencies are:
 - `msgpackr` (MessagePack)
 - `protobufjs` (Protocol Buffers)
 - `avsc` (Apache Avro)
-- `papaparse` (CSV)
 
 ### 2. Data Models ([models.ts](server-bun/src/models.ts))
 
 Implemented data models and generators that exactly mirror the Rust implementation. This includes:
 
 - `SmallPayload` (S1)
-- `CollectionPayload` (S2/S3)
-- `NestedLevel1` (S4)
-- `ArrayPayload` (S5)
+- `CollectionPayload` (S2, implementation endpoint `s2`)
+- `NestedLevel1` (S3, implementation endpoint `s3`)
 
 ### 3. Serialization Logic ([serialization.ts](server-bun/src/serialization.ts))
 
-Implemented generic serializers and deserializers for all formats.
+Implemented generic serializers and deserializers for JSON, MessagePack, Protocol Buffers and Apache Avro.
 
 - **Protobuf**: Defined the schema using `protobufjs` Root JSON.
 - **Avro**: Defined the schema using `avsc`.
-- **CSV**: Handled flattening of complex objects for CSV representation.
 
 ### 4. Native Bun Server ([index.ts](server-bun/src/index.ts))
 
 Used `Bun.serve` for maximum performance.
 
 - Implemented `GET /bench/:format/:scenario` endpoints.
-- Implemented `POST /deserialize/{format}/{scenario}` for S8.
-- Implemented `GET /baseline` for baseline measurements (S12).
+- Implemented `POST /deserialize/{format}/{scenario}` for E2.
+- Implemented `GET /baseline` for baseline measurements (E5).
 
-CSV collection payloads flatten `details` into `manufacturer` and `weight` columns.
 Avro is encoded as one datum using a predefined schema shared by the scenarios.
 
 ## Verification Results
@@ -67,7 +63,6 @@ The server was started and tested using `curl`. All endpoints returned the expec
 | MsgPack  | `/bench/msgpack/s1`  | Success (105 bytes) |
 | Protobuf | `/bench/protobuf/s1` | Success (59 bytes)  |
 | Avro     | `/bench/avro/s1`     | Success (53 bytes)  |
-| CSV      | `/bench/csv/s1`      | Success (110 bytes) |
 | Baseline | `/baseline`          | Success             |
 
 ## How to Run

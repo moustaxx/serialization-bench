@@ -10,17 +10,13 @@ import {
     type ResponseValidation,
 } from "./contract.ts";
 import { assertArtifactMetadata, collectEnvironmentMetadata } from "./environment.ts";
+import { getSharedPayload, matchesCanonicalFixture, type BenchmarkScenario } from "./fixtures.ts";
 import { startResourceSampling, type ResourceStats } from "./process-metrics.ts";
 import { startServer, type Runtime } from "./server-runner.ts";
 
-interface MatrixRow {
+interface BenchmarkRow {
     format: BenchmarkFormat;
     scenario: string;
-    status: string;
-}
-
-interface MatrixFile {
-    matrix: MatrixRow[];
 }
 
 interface RequestResult {
@@ -31,12 +27,10 @@ interface RequestResult {
 }
 
 const repoRoot = path.resolve(new URL("..", import.meta.url).pathname);
-const matrixPath = path.join(repoRoot, "bench", "support-matrix.json");
 const artifactDir = path.join(repoRoot, "bench", "artifacts");
 const runtime = (process.env.BENCH_RUNTIME || "bun") as Runtime;
 const port = process.env.BENCH_PORT || "3000";
 const baseUrl = process.env.BENCH_URL || `http://127.0.0.1:${port}`;
-const selectedStatus = process.env.BENCH_STATUS || "supported";
 const repetitions = Number(process.env.BENCH_REPETITIONS || 3);
 if (!["bun", "rust"].includes(runtime)) {
     throw new Error(`Unsupported BENCH_RUNTIME=${runtime}; use bun or rust`);
@@ -45,12 +39,11 @@ if (!Number.isInteger(repetitions) || repetitions < 1) {
     throw new Error("BENCH_REPETITIONS must be a positive integer");
 }
 
-const matrix = (JSON.parse(fs.readFileSync(matrixPath, "utf8")) as MatrixFile).matrix;
-const rows = matrix.filter((item) => item.status === selectedStatus);
-
-if (!rows.length) {
-    throw new Error(`No rows found for BENCH_STATUS=${selectedStatus}`);
-}
+const formats: BenchmarkFormat[] = ["json", "msgpack", "protobuf", "avro"];
+const scenarios = ["s1", "s2_100", "s2_1000", "s2_10000", "s3"];
+const rows: BenchmarkRow[] = formats.flatMap((format) =>
+    scenarios.map((scenario) => ({ format, scenario })),
+);
 
 function percentile(values: number[], percentileValue: number): number | null {
     if (!values.length) return null;
@@ -107,12 +100,24 @@ async function runRepetition(repetition: number) {
                 );
             }
 
+            if (
+                !matchesCanonicalFixture(
+                    row.format,
+                    row.scenario as BenchmarkScenario,
+                    firstReq.payload,
+                )
+            ) {
+                throw new Error(
+                    `Canonical fixture validation failed for ${row.format}/${row.scenario}`,
+                );
+            }
+
             const deserializeResponse = await fetch(
                 `${baseUrl}/deserialize/${row.format}/${row.scenario}`,
                 {
                     method: "POST",
                     headers: { "Content-Type": expectedContentTypes[row.format] },
-                    body: firstReq.payload,
+                    body: getSharedPayload(row.format, row.scenario as BenchmarkScenario),
                 },
             );
             if (deserializeResponse.status !== 200) {
@@ -128,7 +133,7 @@ async function runRepetition(repetition: number) {
                 runtime,
                 format: row.format,
                 scenario: row.scenario,
-                status: row.status,
+                status: "supported",
                 httpStatus: firstReq.res.status,
                 contentType,
                 payloadBytes: firstReq.payload.length,
@@ -208,12 +213,11 @@ const artifact = {
         runtime,
         serverUrl: baseUrl,
         contract: "GET /bench/{format}/{scenario}",
-        benchStatusFilter: selectedStatus,
         repetitions,
         total: rows.length * repetitions,
         executionMode: runtime === "rust" ? "cargo build --release" : "bun run src/index.ts",
         rejectionRule:
-            "Abort a repetition when status, content type, non-empty payload, or stable size validation fails.",
+            "Abort a repetition when status, content type, canonical fixture, non-empty payload, or stable size validation fails.",
         resourceAggregate: {
             cpuAveragePercent: averageResourceValue(
                 resourceAverages.map((item) => item.cpuAveragePercent),

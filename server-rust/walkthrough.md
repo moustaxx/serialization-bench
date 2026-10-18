@@ -11,31 +11,27 @@ Updated `Cargo.toml` with:
 - `prost`: Protocol Buffers support.
 - `rmp-serde`: MessagePack support.
 - `apache-avro`: Apache Avro support.
-- `csv`: CSV support.
 
 ### 2. Data Models ([models.rs](file:///home/mac/Magisterka/rust/src/models.rs))
 
-The project lives in `server-rust/` and defines structs for scenarios S1-S5 with required attributes for all serialization formats.
+The project lives in `server-rust/` and defines structs for the selected scenarios S1-S3.
 
 - **S1**: Small object with 6 fields.
-- **S2/S3**: Collections of 100 or 10,000 items with nesting.
-- **S4**: Deeply nested structure (5 levels).
-- **S5**: Large array (100,000 integers).
+- **S2**: Collection of 10,000 items (implementation endpoint `s2`).
+- **S3**: Deeply nested structure (5 levels, implementation endpoint `s3`).
 
 ### 3. Serialization Logic ([serialization.rs](file:///home/mac/Magisterka/rust/src/serialization.rs) & [handlers.rs](file:///home/mac/Magisterka/rust/src/handlers.rs))
 
-- Implemented generic and specialized handlers for each format.
+- Implemented generic and specialized handlers for JSON, MessagePack, Protocol Buffers and Avro.
 - Added cached Avro schema definitions for single-datum encoding.
-- Implemented CSV flattening for collection scenarios.
 
 ### 4. Endpoints ([main.rs](file:///home/mac/Magisterka/rust/src/main.rs))
 
 - `GET /bench/{format}/{scenario}`: Main benchmark endpoints.
-- `POST /deserialize/{format}/{scenario}`: Endpoints for testing deserialization performance (S8).
+- `POST /deserialize/{format}/{scenario}`: Endpoints for testing deserialization performance (E2).
 - `GET /baseline`: Minimal plain-text endpoint for baseline measurements.
 
-CSV collection payloads flatten `details` into `manufacturer` and `weight` columns.
-Avro S4 and CSV S4 remain explicitly `not_implemented`.
+Avro is not included for the nested implementation endpoint `s3`.
 
 ## Verification Results
 
@@ -45,11 +41,10 @@ Verified all formats using `curl`:
 - **MessagePack**: Compact binary output.
 - **Protobuf**: Optimized binary output via `prost`.
 - **Avro**: Binary output with embedded schema support.
-- **CSV**: Tabular data with headers.
-- **S12**: Plain text response.
+- **E5**: Plain text response from `/baseline`.
 
 ```bash
 # Example test command
 curl -i http://localhost:3000/bench/json/s1
-curl -i http://localhost:3000/csv/s1
+curl -i http://localhost:3000/bench/avro/s1
 ```

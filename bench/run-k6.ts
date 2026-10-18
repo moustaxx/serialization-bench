@@ -8,7 +8,12 @@ import {
     type BenchmarkOperation,
 } from "./contract.ts";
 import { assertArtifactMetadata, collectEnvironmentMetadata } from "./environment.ts";
-import { startResourceSampling, type ResourceStats } from "./process-metrics.ts";
+import { ensureSharedFixtureFile, type BenchmarkScenario } from "./fixtures.ts";
+import {
+    startResourceSampling,
+    summarizeResourceSamples,
+    type ResourceStats,
+} from "./process-metrics.ts";
 import { startServer, type Runtime } from "./server-runner.ts";
 
 interface K6RunResult {
@@ -28,7 +33,6 @@ const artifactDir = path.join(repoRoot, "bench", "artifacts");
 const runtime = (process.env.BENCH_RUNTIME ?? "bun") as Runtime;
 const port = process.env.BENCH_PORT ?? "3000";
 const baseUrl = process.env.BENCH_URL ?? `http://127.0.0.1:${port}`;
-const profile = process.env.BENCH_PROFILE ?? "steady";
 const format = (process.env.BENCH_FORMAT ?? "json") as BenchmarkFormat;
 const scenario = process.env.BENCH_SCENARIO ?? "s1";
 const operation = (process.env.BENCH_OPERATION ?? "serialize") as BenchmarkOperation;
@@ -37,7 +41,19 @@ const warmupSeconds = process.env.BENCH_WARMUP_SECONDS ?? "10";
 const durationSeconds = process.env.BENCH_DURATION_SECONDS ?? "30";
 const warmupVUs = process.env.BENCH_WARMUP_VUS ?? "1";
 const measurementVUs = process.env.BENCH_VUS ?? "4";
+const loadProfile = process.env.BENCH_LOAD_PROFILE ?? "constant-vus";
+const arrivalRate = process.env.BENCH_ARRIVAL_RATE ?? "20";
+const maxVUs =
+    process.env.BENCH_MAX_VUS ??
+    (loadProfile === "constant-arrival-rate" ? arrivalRate : measurementVUs);
+const sleepSeconds = process.env.BENCH_SLEEP_SECONDS ?? "0.1";
+const seriesId = process.env.BENCH_SERIES_ID ?? null;
+const repetition = process.env.BENCH_REPETITION ?? null;
 const k6Output = path.join("/tmp", `k6-${process.pid}.json`);
+const fixturePath =
+    operation === "deserialize" && scenario !== "baseline"
+        ? ensureSharedFixtureFile(format, scenario as BenchmarkScenario)
+        : "";
 
 if (!["bun", "rust"].includes(runtime)) {
     throw new Error(`Unsupported BENCH_RUNTIME=${runtime}; use bun or rust`);
@@ -50,8 +66,6 @@ function runK6(): Promise<K6RunResult> {
         `BENCH_URL=${baseUrl}`,
         "-e",
         `BENCH_RUNTIME=${runtime}`,
-        "-e",
-        `BENCH_PROFILE=${profile}`,
         "-e",
         `BENCH_FORMAT=${format}`,
         "-e",
@@ -68,6 +82,16 @@ function runK6(): Promise<K6RunResult> {
         `BENCH_WARMUP_VUS=${warmupVUs}`,
         "-e",
         `BENCH_VUS=${measurementVUs}`,
+        "-e",
+        `BENCH_LOAD_PROFILE=${loadProfile}`,
+        "-e",
+        `BENCH_ARRIVAL_RATE=${arrivalRate}`,
+        "-e",
+        `BENCH_MAX_VUS=${maxVUs}`,
+        "-e",
+        `BENCH_SLEEP_SECONDS=${sleepSeconds}`,
+        "-e",
+        `BENCH_FIXTURE_PATH=${fixturePath}`,
         "-e",
         `K6_SUMMARY=${k6Output}`,
         path.join(repoRoot, "bench/k6.js"),
@@ -103,6 +127,7 @@ try {
 
     resourceSampling = startResourceSampling(server.child.pid as number);
     const k6 = await runK6();
+    const measurementEndedAt = new Date();
     resourceStats = resourceSampling.stop();
 
     if (k6.status !== 0) {
@@ -115,10 +140,27 @@ try {
         intervalMs: 100,
         ...resourceStats,
     };
+    const measurementStartedAt = new Date(
+        measurementEndedAt.getTime() - Number(durationSeconds) * 1000,
+    );
+    k6Results.meta.measurementResourceSampling = {
+        source: "/proc",
+        intervalMs: 100,
+        window: "estimated from k6 measurement duration ending at runner stop",
+        from: measurementStartedAt.toISOString(),
+        to: measurementEndedAt.toISOString(),
+        ...summarizeResourceSamples(
+            resourceStats.samples,
+            measurementStartedAt,
+            measurementEndedAt,
+        ),
+    };
     k6Results.meta.runner = "bench/run-k6.ts";
     k6Results.meta.runtime = runtime;
     k6Results.meta.operation = operation;
     k6Results.meta.validation = validation;
+    k6Results.meta.seriesId = seriesId;
+    k6Results.meta.repetition = repetition;
     k6Results.meta.executionMode =
         runtime === "rust" ? "cargo run --release" : "bun run src/index.ts";
     k6Results.meta.rejectionRule =
@@ -126,9 +168,9 @@ try {
     k6Results.meta.environment = collectEnvironmentMetadata(repoRoot);
     assertArtifactMetadata(k6Results.meta);
     fs.mkdirSync(artifactDir, { recursive: true });
-    const artifactPath = path.join(artifactDir, `k6-${runtime}-${profile}-${Date.now()}.json`);
+    const artifactPath = path.join(artifactDir, `k6-${runtime}-${Date.now()}.json`);
     fs.writeFileSync(artifactPath, JSON.stringify(k6Results, null, 2));
-    console.log(JSON.stringify({ artifactPath, runtime, profile, format, scenario }, null, 2));
+    console.log(JSON.stringify({ artifactPath, runtime, format, scenario }, null, 2));
 } finally {
     if (resourceSampling && !resourceStats) {
         resourceStats = resourceSampling.stop();

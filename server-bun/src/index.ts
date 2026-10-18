@@ -1,41 +1,32 @@
-import { genS1, genS2, genS3, genS4, genS5 } from "./models";
-import {
-    serializers,
-    deserializers,
-    avroSmall,
-    avroCollection,
-    avroArray,
-    validateCsvRows,
-} from "./serialization";
+import { genS1, genS2, genS3 } from "./models";
+import { serializers, deserializers, avroSmall, avroCollection, avroNested } from "./serialization";
 
 const scenarioData = {
     s1: genS1(),
     s2: genS2(),
+    s2_100: genS2(100),
+    s2_1000: genS2(1000),
+    s2_10000: genS2(10000),
     s3: genS3(),
-    s4: genS4(),
-    s5: genS5(),
 };
+
+const s2Scenarios = new Set(["s2", "s2_100", "s2_1000", "s2_10000"]);
 
 function getScenarioConfig(scenario: string) {
     switch (scenario) {
         case "s1":
             return { data: scenarioData.s1, pbType: "SmallPayload", avroSchema: avroSmall };
         case "s2":
+        case "s2_100":
+        case "s2_1000":
+        case "s2_10000":
             return {
-                data: scenarioData.s2,
+                data: scenarioData[scenario as keyof typeof scenarioData],
                 pbType: "CollectionPayload",
                 avroSchema: avroCollection,
             };
         case "s3":
-            return {
-                data: scenarioData.s3,
-                pbType: "CollectionPayload",
-                avroSchema: avroCollection,
-            };
-        case "s4":
-            return { data: scenarioData.s4, pbType: "NestedLevel1", avroSchema: null };
-        case "s5":
-            return { data: scenarioData.s5, pbType: "ArrayPayload", avroSchema: avroArray };
+            return { data: scenarioData.s3, pbType: "NestedLevel1", avroSchema: avroNested };
         default:
             return null;
     }
@@ -46,12 +37,6 @@ async function handleBench(format: string, scenario: string) {
     if (!scenarioConfig) return new Response("Not Found", { status: 404 });
 
     const { data, pbType, avroSchema } = scenarioConfig;
-    if (format === "avro" || format === "csv") {
-        if (scenario === "s4") {
-            return new Response("Not Implemented", { status: 501 });
-        }
-    }
-
     let body: Buffer | Uint8Array;
     let contentType = "";
 
@@ -74,10 +59,6 @@ async function handleBench(format: string, scenario: string) {
                 body = serializers.avro(data, avroSchema);
                 contentType = "application/avro";
                 break;
-            case "csv":
-                body = serializers.csv(data, scenario);
-                contentType = "text/csv";
-                break;
             default:
                 return new Response("Bad Request", { status: 400 });
         }
@@ -91,13 +72,13 @@ async function handleBench(format: string, scenario: string) {
 
 function validateDecodedData(data: unknown, scenario: string): boolean {
     if (!data || typeof data !== "object") return false;
-    if (scenario === "s1") return "id" in data && "name" in data;
-    if (scenario === "s2" || scenario === "s3") {
+    if (scenario === "s1") {
+        return "name" in data && typeof data.name === "string" && data.name.length > 0;
+    }
+    if (s2Scenarios.has(scenario)) {
         return "items" in data && Array.isArray(data.items) && data.items.length > 0;
     }
-    if (scenario === "s4") return "next" in data && Boolean(data.next);
-    if (scenario === "s5")
-        return "data" in data && Array.isArray(data.data) && data.data.length > 0;
+    if (scenario === "s3") return "next" in data && Boolean(data.next);
     return false;
 }
 
@@ -127,17 +108,10 @@ async function handleDeserialize(
                     return new Response("Not Implemented", { status: 501 });
                 decoded = deserializers.avro(body, scenarioConfig.avroSchema);
                 break;
-            case "csv":
-                if (scenario === "s4") return new Response("Not Implemented", { status: 501 });
-                decoded = deserializers.csv(body);
-                break;
             default:
                 return new Response("Not Implemented", { status: 501 });
         }
-        const valid =
-            format === "csv"
-                ? validateCsvRows(decoded, scenario)
-                : validateDecodedData(decoded, scenario);
+        const valid = validateDecodedData(decoded, scenario);
         if (validation === "with" && !valid) {
             return new Response("Bad Request", { status: 400 });
         }

@@ -3,8 +3,9 @@ export const expectedContentTypes = {
     msgpack: "application/msgpack",
     protobuf: "application/x-protobuf",
     avro: "application/avro",
-    csv: "text/csv",
 };
+
+import { getSharedPayload, matchesCanonicalFixture, type BenchmarkScenario } from "./fixtures.ts";
 
 export type BenchmarkFormat = keyof typeof expectedContentTypes;
 export type BenchmarkOperation = "serialize" | "deserialize";
@@ -18,30 +19,15 @@ export function resolveServerDirectory(repoRoot: string, runtime: BenchmarkRunti
     return `${repoRoot}/server-${runtime}`;
 }
 
-export interface ScenarioPhase {
-    name: "cold" | "warm";
-    iterations: number;
-}
-
 export function buildBenchmarkEndpoint(
     baseUrl: string,
     format: BenchmarkFormat,
     scenario: string,
     operation: BenchmarkOperation,
 ): string {
-    if (scenario === "s12") return `${baseUrl}/baseline`;
+    if (scenario === "baseline") return `${baseUrl}/baseline`;
     const route = operation === "serialize" ? "bench" : "deserialize";
     return `${baseUrl}/${route}/${format}/${scenario}`;
-}
-
-export function getScenarioPhases(profile: string): ScenarioPhase[] {
-    if (profile === "cold-warm") {
-        return [
-            { name: "cold", iterations: 10 },
-            { name: "warm", iterations: 1000 },
-        ];
-    }
-    return [{ name: "warm", iterations: 1 }];
 }
 
 interface ResponseSnapshot {
@@ -76,23 +62,42 @@ export async function preflightBenchEndpoint(
     scenario: string,
     operation: BenchmarkOperation = "serialize",
 ): Promise<ResponseValidation> {
-    const expectedContentType = scenario === "s12" ? "text/plain" : expectedContentTypes[format];
+    const expectedContentType =
+        scenario === "baseline" ? "text/plain" : expectedContentTypes[format];
     if (!expectedContentType) throw new Error(`Unsupported benchmark format: ${format}`);
+    if (
+        scenario !== "baseline" &&
+        !["s1", "s2_100", "s2_1000", "s2_10000", "s3"].includes(scenario)
+    ) {
+        throw new Error(`Unsupported benchmark scenario: ${scenario}`);
+    }
 
     const endpoint = buildBenchmarkEndpoint(baseUrl, format, scenario, operation);
     if (operation === "deserialize") {
-        const payloadResponse = await fetch(
-            buildBenchmarkEndpoint(baseUrl, format, scenario, "serialize"),
-        );
-        const payload = await payloadResponse.arrayBuffer();
+        const payload = getSharedPayload(format, scenario as BenchmarkScenario);
         const response = await fetch(endpoint, {
             method: "POST",
             headers: { "Content-Type": expectedContentType },
             body: payload,
         });
-        if (response.status !== 200) {
+        const responseContentType = response.headers.get("content-type") ?? "";
+        if (
+            response.status !== 200 ||
+            !responseContentType.startsWith("text/plain") ||
+            (await response.arrayBuffer()).byteLength === 0
+        ) {
             throw new Error(
-                `Validation failed for ${format}/${scenario}: POST returned ${response.status}`,
+                `Validation failed for ${format}/${scenario}: invalid deserialization response`,
+            );
+        }
+        const emptyResponse = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": expectedContentType },
+            body: new Uint8Array(),
+        });
+        if (emptyResponse.status === 200) {
+            throw new Error(
+                `Validation failed for ${format}/${scenario}: endpoint accepts empty payload`,
             );
         }
         return {
@@ -128,6 +133,13 @@ export async function preflightBenchEndpoint(
     if (!responseIsValid) {
         const validationDetails = JSON.stringify(validation);
         throw new Error(`Validation failed for ${format}/${scenario}: ${validationDetails}`);
+    }
+
+    if (
+        scenario !== "baseline" &&
+        !matchesCanonicalFixture(format, scenario as BenchmarkScenario, firstPayload)
+    ) {
+        throw new Error(`Validation failed for ${format}/${scenario}: canonical fixture mismatch`);
     }
 
     return validation;

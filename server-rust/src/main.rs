@@ -7,7 +7,6 @@ use axum::{
     Router,
     routing::{get, post},
 };
-use tower_http::cors::CorsLayer;
 use tracing::info;
 
 #[tokio::main]
@@ -30,8 +29,7 @@ async fn main() {
         .route(
             "/deserialize/{format}/{scenario}",
             post(handlers::handle_deserialization_test),
-        )
-        .layer(CorsLayer::permissive());
+        );
 
     let addr = "0.0.0.0:3000";
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();

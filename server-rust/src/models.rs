@@ -18,8 +18,7 @@ pub struct SmallPayload {
     #[prost(int64, tag = "6")]
     pub timestamp: i64,
 }
-
-// S2 & S3: Średni i Duży payload
+// S2: Kolekcja obiektów
 #[derive(Clone, Serialize, Deserialize, Message)]
 pub struct Item {
     #[prost(int32, tag = "1")]
@@ -50,7 +49,7 @@ pub struct CollectionPayload {
     pub items: Vec<Item>,
 }
 
-// S4: Głębokie zagnieżdżenie (5–7 poziomów)
+// S3: Głębokie zagnieżdżenie (5–7 poziomów)
 #[derive(Clone, Serialize, Deserialize, Message)]
 pub struct NestedLevel1 {
     #[prost(message, optional, tag = "1")]
@@ -81,19 +80,13 @@ pub struct NestedLevel5 {
     pub leaf: String,
 }
 
-// S5: Dane jednorodne (tablice)
-#[derive(Clone, Serialize, Deserialize, Message)]
-pub struct ArrayPayload {
-    #[prost(int32, repeated, tag = "1")]
-    pub data: Vec<i32>,
-}
-
 pub struct PreparedPayloads {
     pub s1: SmallPayload,
     pub s2: CollectionPayload,
-    pub s3: CollectionPayload,
-    pub s4: NestedLevel1,
-    pub s5: ArrayPayload,
+    pub s2_100: CollectionPayload,
+    pub s2_1000: CollectionPayload,
+    pub s2_10000: CollectionPayload,
+    pub s3: NestedLevel1,
 }
 
 static PREPARED_PAYLOADS: OnceLock<PreparedPayloads> = OnceLock::new();
@@ -101,10 +94,11 @@ static PREPARED_PAYLOADS: OnceLock<PreparedPayloads> = OnceLock::new();
 pub fn prepare_payloads() {
     let _ = PREPARED_PAYLOADS.set(PreparedPayloads {
         s1: gen_s1(),
-        s2: gen_s2(),
+        s2: gen_s2(10000),
+        s2_100: gen_s2(100),
+        s2_1000: gen_s2(1000),
+        s2_10000: gen_s2(10000),
         s3: gen_s3(),
-        s4: gen_s4(),
-        s5: gen_s5(),
     });
 }
 
@@ -126,25 +120,8 @@ pub fn gen_s1() -> SmallPayload {
     }
 }
 
-pub fn gen_s2() -> CollectionPayload {
-    let items = (0..100)
-        .map(|i| Item {
-            id: i,
-            code: format!("CODE-{:04}", i),
-            price: i as f64 * 1.5,
-            quantity: i * 2,
-            category: "Electronics".to_string(),
-            details: Some(ItemDetails {
-                manufacturer: "RustCorp".to_string(),
-                weight: "1.2kg".to_string(),
-            }),
-        })
-        .collect();
-    CollectionPayload { items }
-}
-
-pub fn gen_s3() -> CollectionPayload {
-    let items = (0..10000)
+pub fn gen_s2(count: i32) -> CollectionPayload {
+    let items = (0..count)
         .map(|i| Item {
             id: i,
             code: format!("CODE-{:04}", i),
@@ -160,7 +137,7 @@ pub fn gen_s3() -> CollectionPayload {
     CollectionPayload { items }
 }
 
-pub fn gen_s4() -> NestedLevel1 {
+pub fn gen_s3() -> NestedLevel1 {
     NestedLevel1 {
         next: Some(Box::new(NestedLevel2 {
             next: Some(Box::new(NestedLevel3 {
@@ -171,11 +148,5 @@ pub fn gen_s4() -> NestedLevel1 {
                 })),
             })),
         })),
-    }
-}
-
-pub fn gen_s5() -> ArrayPayload {
-    ArrayPayload {
-        data: (0..100000).collect(),
     }
 }
